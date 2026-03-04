@@ -69,7 +69,6 @@
     </div>
 
     <script type="module">
-        // Firebase Imports
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -79,11 +78,11 @@
         const API_URL = `https://friends.roblox.com/v1/users/${USER_ID}/followers/count`;
 
         let sessionData = { startCount: null, startTime: null };
+        let lastKnownFollowerCount = null;
         let countdown = 10;
         let useCloud = false;
         let db, appId;
 
-        // Your Personal Firebase Project Configuration
         const MY_PERSONAL_CONFIG = {
             apiKey: "AIzaSyC0lm0o9MMqeftSqomy10NpaaTFLH2t8JY",
             authDomain: "followers-tracker-9d7bb.firebaseapp.com",
@@ -95,7 +94,6 @@
         };
 
         async function init() {
-            // Check for Canvas environment first, then use personal config
             if (typeof __firebase_config !== 'undefined') {
                 try {
                     const config = JSON.parse(__firebase_config);
@@ -109,7 +107,8 @@
                     await startFirebase(MY_PERSONAL_CONFIG, 'global-follower-session');
                     return;
                 } catch (e) { 
-                    console.error("Personal Cloud Init failed", e); 
+                    console.error("Personal Cloud Init failed", e);
+                    document.getElementById('status-msg').innerText = "Cloud Error: " + e.code;
                 }
             }
 
@@ -117,13 +116,12 @@
         }
 
         async function startFirebase(config, targetAppId) {
-            const app = initializeApp(config);
-            const auth = getAuth(app);
-            db = getFirestore(app);
-            appId = targetAppId;
-
             try {
-                // Prioritize environment token if available, else anonymous
+                const app = initializeApp(config);
+                const auth = getAuth(app);
+                db = getFirestore(app);
+                appId = targetAppId;
+
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
@@ -135,10 +133,13 @@
                         useCloud = true;
                         setupCloudSync();
                         startLoops();
+                    } else {
+                        setupLocalFallback();
                     }
                 });
             } catch (err) {
-                console.error("Authentication Error:", err);
+                console.error("Firebase start error:", err);
+                document.getElementById('status-msg').innerText = "Auth Error: Enable Anonymous Login";
                 setupLocalFallback();
             }
         }
@@ -149,21 +150,26 @@
             if (saved) {
                 sessionData = JSON.parse(saved);
             }
-            document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
+            if (!document.getElementById('status-msg').innerText.includes("Error")) {
+                document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
+            }
             startLoops();
         }
 
         function setupCloudSync() {
-            // Path structure for Firestore segments: 6 segments total (even)
             const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
             onSnapshot(docRef, (snapshot) => {
                 if (snapshot.exists()) {
                     sessionData = snapshot.data();
                     document.getElementById('status-msg').innerText = "Cloud Synced";
+                    // Refresh UI with existing data if we have it
+                    if (lastKnownFollowerCount !== null) {
+                        updateUI(lastKnownFollowerCount);
+                    }
                 }
             }, (err) => {
-                console.error("Firestore Error:", err);
-                document.getElementById('status-msg').innerText = "Sync Error: Check Firebase Rules";
+                console.error("Sync error:", err);
+                document.getElementById('status-msg').innerText = "Sync Error: Check Firestore Rules";
             });
         }
 
@@ -172,8 +178,8 @@
                 const response = await fetch(PROXY_URL + encodeURIComponent(API_URL));
                 const data = await response.json();
                 const currentCount = data.count;
+                lastKnownFollowerCount = currentCount;
 
-                // Set initial data if none exists
                 if (!sessionData.startCount) {
                     sessionData = {
                         startCount: currentCount,
@@ -182,15 +188,14 @@
                     
                     if (useCloud) {
                         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
-                        await setDoc(docRef, sessionData);
+                        await setDoc(docRef, sessionData).catch(e => console.error("Save error", e));
                     } else {
                         localStorage.setItem('rbx_session', JSON.stringify(sessionData));
                     }
                 }
-
                 updateUI(currentCount);
             } catch (error) {
-                document.getElementById('status-msg').innerText = "Update error. Retrying...";
+                document.getElementById('status-msg').innerText = "Fetch error. Check Proxy.";
             }
         }
 
@@ -198,17 +203,19 @@
             document.getElementById('follower-count').innerText = currentCount.toLocaleString();
             if (sessionData.startCount) {
                 const gain = currentCount - sessionData.startCount;
-                document.getElementById('session-gain').innerText = `+${gain}`;
+                document.getElementById('session-gain').innerText = (gain >= 0 ? '+' : '') + gain;
                 
                 const elapsedHours = (Date.now() - sessionData.startTime) / 3600000;
                 if (elapsedHours > 0) {
                     const rate = (gain / elapsedHours).toFixed(2);
-                    document.getElementById('growth-rate').innerHTML = `+${rate} <span class="text-xs font-normal">/hr</span>`;
+                    document.getElementById('growth-rate').innerHTML = (rate >= 0 ? '+' : '') + rate + ` <span class="text-xs font-normal">/hr</span>`;
                 }
             }
         }
 
         function startLoops() {
+            if (window.timerStarted) return;
+            window.timerStarted = true;
             setInterval(() => {
                 countdown--;
                 if (countdown <= 0) {
