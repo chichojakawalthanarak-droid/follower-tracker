@@ -83,7 +83,19 @@
         let useCloud = false;
         let db, appId;
 
+        // RE-ADDED: Your specific Firebase configuration
+        const MY_PERSONAL_CONFIG = {
+            apiKey: "AIzaSyC0lm0o9MMqeftSqomy10NpaaTFLH2t8JY",
+            authDomain: "followers-tracker-9d7bb.firebaseapp.com",
+            projectId: "followers-tracker-9d7bb",
+            storageBucket: "followers-tracker-9d7bb.firebasestorage.app",
+            messagingSenderId: "22399555455",
+            appId: "1:22399555455:web:c4b68dddf4d5bc1cc7ac4a",
+            measurementId: "G-30D19BRHNQ"
+        };
+
         async function init() {
+            // Check for Canvas environment variables
             if (typeof __firebase_config !== 'undefined') {
                 try {
                     const config = JSON.parse(__firebase_config);
@@ -91,6 +103,18 @@
                     return;
                 } catch (e) { console.error("Canvas Cloud Init failed"); }
             }
+
+            // Use your personal config if running on GitHub Pages or local
+            if (MY_PERSONAL_CONFIG) {
+                try {
+                    await startFirebase(MY_PERSONAL_CONFIG, 'global-follower-session');
+                    return;
+                } catch (e) { 
+                    console.error("Personal Cloud Init failed", e);
+                    document.getElementById('status-msg').innerText = "Cloud Error: Check Auth/Rules";
+                }
+            }
+
             setupLocalFallback();
         }
 
@@ -101,6 +125,7 @@
                 db = getFirestore(app);
                 appId = targetAppId;
 
+                // Priority: Canvas Token > Anonymous
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
@@ -117,6 +142,7 @@
                     }
                 });
             } catch (err) {
+                console.error("Firebase auth error:", err);
                 setupLocalFallback();
             }
         }
@@ -125,7 +151,9 @@
             useCloud = false;
             const saved = localStorage.getItem('rbx_session');
             if (saved) { sessionData = JSON.parse(saved); }
-            document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
+            if (!document.getElementById('status-msg').innerText.includes("Error")) {
+                document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
+            }
             startLoops();
         }
 
@@ -138,18 +166,18 @@
                     if (lastKnownFollowerCount !== null) updateUI(lastKnownFollowerCount);
                 }
             }, (err) => {
-                document.getElementById('status-msg').innerText = "Cloud Sync Active";
+                console.error("Sync error:", err);
+                document.getElementById('status-msg').innerText = "Sync Error: Check Firestore Rules";
             });
         }
 
         async function fetchFollowers() {
             try {
-                // CACHE BUSTING: Append unique timestamp so browser doesn't cache the API result
                 const cacheBuster = `&t=${Date.now()}`;
                 const finalUrl = PROXY_URL + encodeURIComponent(API_URL + (API_URL.includes('?') ? '&' : '?') + cacheBuster);
                 
                 const response = await fetch(finalUrl, { 
-                    cache: "no-store", // Explicitly tell browser not to store/use cache
+                    cache: "no-store",
                     headers: { 'Pragma': 'no-cache', 'Cache-Control': 'no-cache' } 
                 });
                 
@@ -165,14 +193,14 @@
                     
                     if (useCloud) {
                         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
-                        await setDoc(docRef, sessionData).catch(e => console.error(e));
+                        await setDoc(docRef, sessionData).catch(e => console.error("Save error", e));
                     } else {
                         localStorage.setItem('rbx_session', JSON.stringify(sessionData));
                     }
                 }
                 updateUI(currentCount);
             } catch (error) {
-                document.getElementById('status-msg').innerText = "Fetch error. Retrying...";
+                document.getElementById('status-msg').innerText = "Update failed. Retrying...";
             }
         }
 
