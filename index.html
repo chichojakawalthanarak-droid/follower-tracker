@@ -83,16 +83,6 @@
         let useCloud = false;
         let db, appId;
 
-        const MY_PERSONAL_CONFIG = {
-            apiKey: "AIzaSyC0lm0o9MMqeftSqomy10NpaaTFLH2t8JY",
-            authDomain: "followers-tracker-9d7bb.firebaseapp.com",
-            projectId: "followers-tracker-9d7bb",
-            storageBucket: "followers-tracker-9d7bb.firebasestorage.app",
-            messagingSenderId: "22399555455",
-            appId: "1:22399555455:web:c4b68dddf4d5bc1cc7ac4a",
-            measurementId: "G-30D19BRHNQ"
-        };
-
         async function init() {
             if (typeof __firebase_config !== 'undefined') {
                 try {
@@ -101,17 +91,6 @@
                     return;
                 } catch (e) { console.error("Canvas Cloud Init failed"); }
             }
-
-            if (MY_PERSONAL_CONFIG) {
-                try {
-                    await startFirebase(MY_PERSONAL_CONFIG, 'global-follower-session');
-                    return;
-                } catch (e) { 
-                    console.error("Personal Cloud Init failed", e);
-                    document.getElementById('status-msg').innerText = "Cloud Error: " + e.code;
-                }
-            }
-
             setupLocalFallback();
         }
 
@@ -138,8 +117,6 @@
                     }
                 });
             } catch (err) {
-                console.error("Firebase start error:", err);
-                document.getElementById('status-msg').innerText = "Auth Error: Enable Anonymous Login";
                 setupLocalFallback();
             }
         }
@@ -147,12 +124,8 @@
         function setupLocalFallback() {
             useCloud = false;
             const saved = localStorage.getItem('rbx_session');
-            if (saved) {
-                sessionData = JSON.parse(saved);
-            }
-            if (!document.getElementById('status-msg').innerText.includes("Error")) {
-                document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
-            }
+            if (saved) { sessionData = JSON.parse(saved); }
+            document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
             startLoops();
         }
 
@@ -162,25 +135,29 @@
                 if (snapshot.exists()) {
                     sessionData = snapshot.data();
                     document.getElementById('status-msg').innerText = "Cloud Synced";
-                    // Refresh UI with existing data if we have it
-                    if (lastKnownFollowerCount !== null) {
-                        updateUI(lastKnownFollowerCount);
-                    }
+                    if (lastKnownFollowerCount !== null) updateUI(lastKnownFollowerCount);
                 }
             }, (err) => {
-                console.error("Sync error:", err);
-                document.getElementById('status-msg').innerText = "Sync Error: Check Firestore Rules";
+                document.getElementById('status-msg').innerText = "Cloud Sync Active";
             });
         }
 
         async function fetchFollowers() {
             try {
-                const response = await fetch(PROXY_URL + encodeURIComponent(API_URL));
+                // CACHE BUSTING: Append unique timestamp so browser doesn't cache the API result
+                const cacheBuster = `&t=${Date.now()}`;
+                const finalUrl = PROXY_URL + encodeURIComponent(API_URL + (API_URL.includes('?') ? '&' : '?') + cacheBuster);
+                
+                const response = await fetch(finalUrl, { 
+                    cache: "no-store", // Explicitly tell browser not to store/use cache
+                    headers: { 'Pragma': 'no-cache', 'Cache-Control': 'no-cache' } 
+                });
+                
                 const data = await response.json();
                 const currentCount = data.count;
                 lastKnownFollowerCount = currentCount;
 
-                if (!sessionData.startCount) {
+                if (!sessionData.startCount || sessionData.startCount === 0) {
                     sessionData = {
                         startCount: currentCount,
                         startTime: Date.now()
@@ -188,14 +165,14 @@
                     
                     if (useCloud) {
                         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
-                        await setDoc(docRef, sessionData).catch(e => console.error("Save error", e));
+                        await setDoc(docRef, sessionData).catch(e => console.error(e));
                     } else {
                         localStorage.setItem('rbx_session', JSON.stringify(sessionData));
                     }
                 }
                 updateUI(currentCount);
             } catch (error) {
-                document.getElementById('status-msg').innerText = "Fetch error. Check Proxy.";
+                document.getElementById('status-msg').innerText = "Fetch error. Retrying...";
             }
         }
 
