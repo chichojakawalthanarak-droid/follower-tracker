@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Follower Tracker | Ffhhchicho_ac2</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0a0a0a;
+            color: white;
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .pulse {
+            animation: pulse-animation 2s infinite;
+        }
+        @keyframes pulse-animation {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-6">
+
+    <div class="max-w-md w-full glass rounded-3xl p-8 shadow-2xl">
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-8">
+            <div class="flex items-center gap-2">
+                <div class="w-2 h-2 bg-red-500 rounded-full pulse"></div>
+                <span class="text-[10px] font-bold tracking-widest uppercase text-gray-500">Live</span>
+            </div>
+            <span id="update-timer" class="text-xs text-gray-500 font-mono">Updating in 10s</span>
+        </div>
+
+        <!-- Main Info -->
+        <div class="text-center mb-10">
+            <h1 class="text-2xl font-semibold text-gray-300 mb-1">Ffhhchicho_ac2</h1>
+            <p class="text-sm text-gray-500 mb-6">User ID: 4886651930</p>
+            
+            <div id="follower-count" class="text-7xl font-extrabold tracking-tighter text-white mb-2">
+                ---
+            </div>
+            <p class="text-gray-400 uppercase text-xs tracking-widest font-bold">Total Followers</p>
+        </div>
+
+        <!-- Stats Grid -->
+        <div class="grid grid-cols-2 gap-4">
+            <div class="bg-white/5 rounded-2xl p-4 border border-white/5">
+                <p class="text-gray-500 text-xs mb-1">Growth Rate</p>
+                <p id="growth-rate" class="text-xl font-bold text-green-400">+0.00 <span class="text-xs font-normal">/hr</span></p>
+            </div>
+            <div class="bg-white/5 rounded-2xl p-4 border border-white/5">
+                <p class="text-gray-500 text-xs mb-1">Session Gain</p>
+                <p id="session-gain" class="text-xl font-bold text-blue-400">+0</p>
+            </div>
+        </div>
+
+        <!-- Footer Info -->
+        <div class="mt-8 pt-6 border-t border-white/10 text-center">
+            <p id="status-msg" class="text-xs text-gray-600 italic">Initializing Cloud Sync...</p>
+        </div>
+    </div>
+
+    <script type="module">
+        // Firebase Imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const USER_ID = "4886651930";
+        const PROXY_URL = "https://corsproxy.io/?";
+        const API_URL = `https://friends.roblox.com/v1/users/${USER_ID}/followers/count`;
+
+        let sessionData = { startCount: null, startTime: null };
+        let countdown = 10;
+        let useCloud = false;
+        let db, appId;
+
+        // Your Personal Firebase Project Configuration
+        const MY_PERSONAL_CONFIG = {
+            apiKey: "AIzaSyC0lm0o9MMqeftSqomy10NpaaTFLH2t8JY",
+            authDomain: "followers-tracker-9d7bb.firebaseapp.com",
+            projectId: "followers-tracker-9d7bb",
+            storageBucket: "followers-tracker-9d7bb.firebasestorage.app",
+            messagingSenderId: "22399555455",
+            appId: "1:22399555455:web:c4b68dddf4d5bc1cc7ac4a",
+            measurementId: "G-30D19BRHNQ"
+        };
+
+        async function init() {
+            // Check for Canvas environment first, then use personal config
+            if (typeof __firebase_config !== 'undefined') {
+                try {
+                    const config = JSON.parse(__firebase_config);
+                    await startFirebase(config, typeof __app_id !== 'undefined' ? __app_id : 'roblox-tracker-app');
+                    return;
+                } catch (e) { console.error("Canvas Cloud Init failed"); }
+            }
+
+            if (MY_PERSONAL_CONFIG) {
+                try {
+                    await startFirebase(MY_PERSONAL_CONFIG, 'global-follower-session');
+                    return;
+                } catch (e) { 
+                    console.error("Personal Cloud Init failed", e); 
+                }
+            }
+
+            setupLocalFallback();
+        }
+
+        async function startFirebase(config, targetAppId) {
+            const app = initializeApp(config);
+            const auth = getAuth(app);
+            db = getFirestore(app);
+            appId = targetAppId;
+
+            try {
+                // Prioritize environment token if available, else anonymous
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        useCloud = true;
+                        setupCloudSync();
+                        startLoops();
+                    }
+                });
+            } catch (err) {
+                console.error("Authentication Error:", err);
+                setupLocalFallback();
+            }
+        }
+
+        function setupLocalFallback() {
+            useCloud = false;
+            const saved = localStorage.getItem('rbx_session');
+            if (saved) {
+                sessionData = JSON.parse(saved);
+            }
+            document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
+            startLoops();
+        }
+
+        function setupCloudSync() {
+            // Path structure for Firestore segments: 6 segments total (even)
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
+            onSnapshot(docRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    sessionData = snapshot.data();
+                    document.getElementById('status-msg').innerText = "Cloud Synced";
+                }
+            }, (err) => {
+                console.error("Firestore Error:", err);
+                document.getElementById('status-msg').innerText = "Sync Error: Check Firebase Rules";
+            });
+        }
+
+        async function fetchFollowers() {
+            try {
+                const response = await fetch(PROXY_URL + encodeURIComponent(API_URL));
+                const data = await response.json();
+                const currentCount = data.count;
+
+                // Set initial data if none exists
+                if (!sessionData.startCount) {
+                    sessionData = {
+                        startCount: currentCount,
+                        startTime: Date.now()
+                    };
+                    
+                    if (useCloud) {
+                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
+                        await setDoc(docRef, sessionData);
+                    } else {
+                        localStorage.setItem('rbx_session', JSON.stringify(sessionData));
+                    }
+                }
+
+                updateUI(currentCount);
+            } catch (error) {
+                document.getElementById('status-msg').innerText = "Update error. Retrying...";
+            }
+        }
+
+        function updateUI(currentCount) {
+            document.getElementById('follower-count').innerText = currentCount.toLocaleString();
+            if (sessionData.startCount) {
+                const gain = currentCount - sessionData.startCount;
+                document.getElementById('session-gain').innerText = `+${gain}`;
+                
+                const elapsedHours = (Date.now() - sessionData.startTime) / 3600000;
+                if (elapsedHours > 0) {
+                    const rate = (gain / elapsedHours).toFixed(2);
+                    document.getElementById('growth-rate').innerHTML = `+${rate} <span class="text-xs font-normal">/hr</span>`;
+                }
+            }
+        }
+
+        function startLoops() {
+            setInterval(() => {
+                countdown--;
+                if (countdown <= 0) {
+                    fetchFollowers();
+                    countdown = 10;
+                }
+                document.getElementById('update-timer').innerText = `Updating in ${countdown}s`;
+            }, 1000);
+            fetchFollowers();
+        }
+
+        init();
+    </script>
+</body>
+</html>
