@@ -25,6 +25,14 @@
             50% { opacity: 0.3; }
             100% { opacity: 1; }
         }
+        .btn-reset {
+            transition: all 0.2s ease;
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .btn-reset:hover {
+            background: rgba(255, 0, 0, 0.2);
+            border-color: rgba(255, 0, 0, 0.3);
+        }
     </style>
 </head>
 <body class="min-h-screen flex items-center justify-center p-6">
@@ -62,16 +70,19 @@
             </div>
         </div>
 
-        <!-- Footer Info -->
-        <div class="mt-8 pt-6 border-t border-white/10 text-center">
-            <p id="status-msg" class="text-xs text-gray-600 italic">Initializing Cloud Sync...</p>
+        <!-- Footer Info & Controls -->
+        <div class="mt-8 pt-6 border-t border-white/10 flex flex-col items-center gap-4">
+            <button id="reset-session" class="btn-reset text-[10px] uppercase tracking-widest font-bold text-gray-400 px-4 py-2 rounded-full border border-white/10">
+                Reset Session Stats
+            </button>
+            <p id="status-msg" class="text-[10px] text-gray-600 italic">Initializing Cloud Sync...</p>
         </div>
     </div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, deleteDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const USER_ID = "4886651930";
         const PROXY_URL = "https://corsproxy.io/?";
@@ -83,7 +94,6 @@
         let useCloud = false;
         let db, appId;
 
-        // RE-ADDED: Your specific Firebase configuration
         const MY_PERSONAL_CONFIG = {
             apiKey: "AIzaSyC0lm0o9MMqeftSqomy10NpaaTFLH2t8JY",
             authDomain: "followers-tracker-9d7bb.firebaseapp.com",
@@ -95,7 +105,6 @@
         };
 
         async function init() {
-            // Check for Canvas environment variables
             if (typeof __firebase_config !== 'undefined') {
                 try {
                     const config = JSON.parse(__firebase_config);
@@ -104,7 +113,6 @@
                 } catch (e) { console.error("Canvas Cloud Init failed"); }
             }
 
-            // Use your personal config if running on GitHub Pages or local
             if (MY_PERSONAL_CONFIG) {
                 try {
                     await startFirebase(MY_PERSONAL_CONFIG, 'global-follower-session');
@@ -114,7 +122,6 @@
                     document.getElementById('status-msg').innerText = "Cloud Error: Check Auth/Rules";
                 }
             }
-
             setupLocalFallback();
         }
 
@@ -125,7 +132,6 @@
                 db = getFirestore(app);
                 appId = targetAppId;
 
-                // Priority: Canvas Token > Anonymous
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
@@ -142,7 +148,6 @@
                     }
                 });
             } catch (err) {
-                console.error("Firebase auth error:", err);
                 setupLocalFallback();
             }
         }
@@ -151,9 +156,7 @@
             useCloud = false;
             const saved = localStorage.getItem('rbx_session');
             if (saved) { sessionData = JSON.parse(saved); }
-            if (!document.getElementById('status-msg').innerText.includes("Error")) {
-                document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
-            }
+            document.getElementById('status-msg').innerText = "Local Storage (No Cloud)";
             startLoops();
         }
 
@@ -162,16 +165,109 @@
             onSnapshot(docRef, (snapshot) => {
                 if (snapshot.exists()) {
                     sessionData = snapshot.data();
-                    document.getElementById('status-msg').innerText = "Cloud Synced";
+                    document.getElementById('status-msg').innerText = "Cloud Synced (10s Cycle)";
+                    if (lastKnownFollowerCount !== null) updateUI(lastKnownFollowerCount);
+                } else {
+                    sessionData = { startCount: null, startTime: null };
                     if (lastKnownFollowerCount !== null) updateUI(lastKnownFollowerCount);
                 }
             }, (err) => {
-                console.error("Sync error:", err);
-                document.getElementById('status-msg').innerText = "Sync Error: Check Firestore Rules";
+                document.getElementById('status-msg').innerText = "Cloud Sync Error";
             });
         }
 
+        async function saveToHistory(count) {
+            if (!useCloud || !db || !appId) return;
+            const now = Date.now();
+            
+            // Log history point every 10 seconds (aligned with refresh)
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'history', now.toString());
+            await setDoc(docRef, { followers: count, timestamp: now }).catch(e => console.error(e));
+        }
+
+        async function updateTrueGrowthRate(currentCount) {
+            if (!useCloud || !db || !appId) {
+                updateSessionRate(currentCount);
+                return;
+            }
+
+            try {
+                const oneHourAgo = Date.now() - (60 * 60 * 1000);
+                const historyRef = collection(db, 'artifacts', appId, 'public', 'data', 'history');
+                const snapshot = await getDocs(historyRef);
+
+                if (snapshot.empty) {
+                    updateSessionRate(currentCount);
+                    return;
+                }
+
+                let records = [];
+                snapshot.forEach(doc => records.push(doc.data()));
+                const recentRecords = records.filter(r => r.timestamp >= oneHourAgo);
+
+                if (recentRecords.length === 0) {
+                    updateSessionRate(currentCount);
+                    return;
+                }
+
+                recentRecords.sort((a, b) => a.timestamp - b.timestamp);
+                const oldestRecord = recentRecords[0];
+                const timePassedInHours = (Date.now() - oldestRecord.timestamp) / (1000 * 60 * 60);
+
+                if (timePassedInHours < 0.01) { // Fallback if record is too fresh
+                    updateSessionRate(currentCount);
+                    return;
+                }
+
+                const gained = currentCount - oldestRecord.followers;
+                const trueRate = (gained / timePassedInHours).toFixed(2);
+                renderRateUI(trueRate);
+
+                // Auto-cleanup points older than 2 hours
+                const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+                records.forEach(r => {
+                    if (r.timestamp < twoHoursAgo) {
+                        deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'history', r.timestamp.toString())).catch(()=>{});
+                    }
+                });
+
+            } catch (error) {
+                updateSessionRate(currentCount);
+            }
+        }
+
+        function updateSessionRate(currentCount) {
+            if (sessionData.startCount && sessionData.startTime) {
+                const gain = currentCount - sessionData.startCount;
+                const elapsedHours = (Date.now() - sessionData.startTime) / 3600000;
+                if (elapsedHours > 0) {
+                    renderRateUI((gain / elapsedHours).toFixed(2));
+                }
+            } else {
+                renderRateUI(0);
+            }
+        }
+
+        function renderRateUI(rate) {
+            const rateElement = document.getElementById('growth-rate');
+            const numRate = parseFloat(rate);
+            
+            if (numRate >= 0) {
+                rateElement.innerHTML = `+${numRate.toFixed(2)} <span class="text-xs font-normal">/hr</span>`;
+                rateElement.classList.remove('text-red-400');
+                rateElement.classList.add('text-green-400');
+            } else {
+                rateElement.innerHTML = `${numRate.toFixed(2)} <span class="text-xs font-normal">/hr</span>`;
+                rateElement.classList.remove('text-green-400');
+                rateElement.classList.add('text-red-400');
+            }
+        }
+
         async function fetchFollowers() {
+            const timerEl = document.getElementById('update-timer');
+            timerEl.innerText = "Refreshing...";
+            timerEl.classList.add('text-white');
+
             try {
                 const cacheBuster = `&t=${Date.now()}`;
                 const finalUrl = PROXY_URL + encodeURIComponent(API_URL + (API_URL.includes('?') ? '&' : '?') + cacheBuster);
@@ -185,6 +281,10 @@
                 const currentCount = data.count;
                 lastKnownFollowerCount = currentCount;
 
+                // 1. Log to history every 10s
+                saveToHistory(currentCount);
+
+                // 2. Update cloud session if empty
                 if (!sessionData.startCount || sessionData.startCount === 0) {
                     sessionData = {
                         startCount: currentCount,
@@ -193,12 +293,15 @@
                     
                     if (useCloud) {
                         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
-                        await setDoc(docRef, sessionData).catch(e => console.error("Save error", e));
+                        await setDoc(docRef, sessionData).catch(e => console.error(e));
                     } else {
                         localStorage.setItem('rbx_session', JSON.stringify(sessionData));
                     }
                 }
+                
                 updateUI(currentCount);
+                setTimeout(() => timerEl.classList.remove('text-white'), 500);
+
             } catch (error) {
                 document.getElementById('status-msg').innerText = "Update failed. Retrying...";
             }
@@ -206,32 +309,49 @@
 
         function updateUI(currentCount) {
             document.getElementById('follower-count').innerText = currentCount.toLocaleString();
+            
             if (sessionData.startCount) {
                 const gain = currentCount - sessionData.startCount;
                 document.getElementById('session-gain').innerText = (gain >= 0 ? '+' : '') + gain;
-                
-                const elapsedHours = (Date.now() - sessionData.startTime) / 3600000;
-                if (elapsedHours > 0) {
-                    const rate = (gain / elapsedHours).toFixed(2);
-                    document.getElementById('growth-rate').innerHTML = (rate >= 0 ? '+' : '') + rate + ` <span class="text-xs font-normal">/hr</span>`;
-                }
+            } else {
+                document.getElementById('session-gain').innerText = "+0";
             }
+
+            updateTrueGrowthRate(currentCount);
+        }
+
+        async function handleReset() {
+            if (!confirm("Reset your growth session?")) return;
+            sessionData = { startCount: null, startTime: null };
+            if (useCloud) {
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'session_storage', 'current');
+                await deleteDoc(docRef).catch(e => console.error(e));
+            } else {
+                localStorage.removeItem('rbx_session');
+            }
+            fetchFollowers();
         }
 
         function startLoops() {
             if (window.timerStarted) return;
             window.timerStarted = true;
+            
             setInterval(() => {
                 countdown--;
                 if (countdown <= 0) {
-                    fetchFollowers();
                     countdown = 10;
+                    fetchFollowers();
                 }
-                document.getElementById('update-timer').innerText = `Updating in ${countdown}s`;
+                const timerEl = document.getElementById('update-timer');
+                if (timerEl.innerText !== "Refreshing...") {
+                    timerEl.innerText = `Updating in ${countdown}s`;
+                }
             }, 1000);
+            
             fetchFollowers();
         }
 
+        document.getElementById('reset-session').addEventListener('click', handleReset);
         init();
     </script>
 </body>
